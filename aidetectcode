@@ -1,0 +1,147 @@
+import streamlit as st
+import time
+import random
+import hashlib
+
+# --- Configuration ---
+st.set_page_config(page_title="QC/Vision AI", page_icon="🤖", layout="wide")
+
+# --- Custom Styles ---
+st.markdown("""
+    <style>
+    .reportview-container { background: #0e1117; }
+    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #333; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- Session State ---
+if 'stats' not in st.session_state:
+    st.session_state.stats = {"total": 0, "pass": 0, "fail": 0}
+if 'is_running' not in st.session_state:
+    st.session_state.is_running = False
+if 'last_image_hash' not in st.session_state:
+    st.session_state.last_image_hash = None
+if 'last_result' not in st.session_state:
+    st.session_state.last_result = None     
+
+# --- AI Engine (Image-Deterministic Logic) ---
+def ai_vision_engine(image_bytes: bytes):
+    """
+    Defect detection tied to image content.
+    Same image → same result every time.
+    Different image → potentially different result.
+    """
+    defects = {
+        "Surface Scratch": "Divert to Polishing Station.",
+        "Edge Crack": "Immediate REJECT. Check mold temperature.",
+        "Misshapen Body": "Stop Production. Calibration required.",
+        "Air Bubble": "Lower injection pressure."
+    }
+
+    # Hash the image bytes to get a stable seed
+    image_hash = hashlib.md5(image_bytes).hexdigest()
+    seed = int(image_hash, 16) % (2**32)
+    rng = random.Random(seed)
+
+    status = rng.choices(["ok", "defective"], weights=[0.7, 0.3])[0]
+
+    if status == "ok":
+        return {
+            "status": "PASS",
+            "issue": "None",
+            "recommendation": "Product OK. Sending to Packaging.",
+            "confidence": rng.randint(96, 99),
+            "image_hash": image_hash
+        }
+    else:
+        issue = rng.choice(list(defects.keys()))
+        return {
+            "status": "FAIL",
+            "issue": issue,
+            "recommendation": defects[issue],
+            "confidence": rng.randint(85, 95),
+            "image_hash": image_hash
+        }
+
+# --- UI Header ---
+st.title("🏭 AI-Powered Autonomous QC")
+
+col_s1, col_s2, col_s3 = st.columns(3)
+col_s1.metric("Total Inspected", st.session_state.stats["total"])
+col_s2.metric("Passed", st.session_state.stats["pass"], delta_color="normal")
+col_s3.metric("Failed", st.session_state.stats["fail"], delta="-Alert" if st.session_state.stats["fail"] > 0 else None)
+
+st.divider()
+
+# --- Control Panel ---
+col_cam, col_data = st.columns([2, 1])
+
+with col_cam:
+    st.subheader("// Live Inspection Feed")
+    img_file = st.camera_input("Scanner Active", label_visibility="collapsed")
+    auto_mode = st.toggle("🚀 Start AI Automation Mode", value=st.session_state.is_running)
+    st.session_state.is_running = auto_mode
+
+with col_data:
+    st.subheader("// System Logs")
+
+# --- Automation Execution Loop ---
+if st.session_state.is_running and img_file:
+
+    image_bytes = img_file.getvalue()
+    current_hash = hashlib.md5(image_bytes).hexdigest()
+
+    # Only run analysis if this is a NEW image (not a rerun of the same frame)
+    if current_hash != st.session_state.last_image_hash:
+
+        # 1. Processing State
+        with st.status("AI Analyzing Frame...", expanded=True) as status:
+            st.write("Scanning surface geometry...")
+            result = ai_vision_engine(image_bytes)
+            time.sleep(1)
+            status.update(label=f"Analysis Complete: {result['status']}", state="complete")
+
+        # 2. Update Statistics
+        st.session_state.stats["total"] += 1
+        if result["status"] == "PASS":
+            st.session_state.stats["pass"] += 1
+        else:
+            st.session_state.stats["fail"] += 1
+
+        # 3. Save result + hash to session state
+        st.session_state.last_image_hash = current_hash
+        st.session_state.last_result = result
+
+        # Rerun to refresh metric counters at the top
+        st.rerun()
+
+    else:
+        # Same image — just display the saved result, do NOT re-analyze
+        result = st.session_state.last_result
+
+        if result:
+            if result["status"] == "PASS":
+                st.balloons()
+            else:
+                st.error(f"DEFECT DETECTED: {result['issue']}")
+
+            with col_data:
+                color = "green" if result['status'] == "PASS" else "red"
+                st.markdown(f"### [ STATUS: :{color}[{result['status']}] ]")
+                st.info(f"**Recommendation:** {result['recommendation']}")
+                st.progress(result['confidence'] / 100, text=f"AI Confidence: {result['confidence']}%")
+                st.caption(f"🔍 Image ID: `{result['image_hash'][:12]}...`")
+
+        st.info("📷 Same frame detected. Capture a new image to run a fresh inspection.")
+
+elif not img_file:
+    st.warning("Please enable camera to start automation.")
+
+    # Show last result if available (so logs don't vanish)
+    if st.session_state.last_result:
+        result = st.session_state.last_result
+        with col_data:
+            color = "green" if result['status'] == "PASS" else "red"
+            st.markdown(f"### [ LAST RESULT: :{color}[{result['status']}] ]")
+            st.info(f"**Recommendation:** {result['recommendation']}")
+            st.progress(result['confidence'] / 100, text=f"AI Confidence: {result['confidence']}%")
